@@ -1,0 +1,13 @@
+# .gitignore для dotnet и node
+bin/
+obj/
+.vs/
+*.user
+*.suo
+node_modules/
+dist/
+.env
+.idea/
+.vscode/
+*.db
+.DS_Store
