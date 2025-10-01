@@ -1,16 +1,24 @@
 import React from "react";
 import ChatTest from "./ChatTest";
 import Kanban from "./Kanban";
+import "./styles.css"; // импорт тёмной темы
 
-export default function App() {
+export default function App(){
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "1fr 400px", gap: 20, padding: 20 }}>
-      <div>
-        <h2>Team Messenger — чат</h2>
+    <div className="app-grid">
+      <div style={{ display:"flex", flexDirection:"column" }}>
+        <div style={{ marginBottom:12 }}>
+          <h2 style={{ margin:0, color:"#fff" }}>Team Messenger — чат</h2>
+          <div style={{ color:"#9aa3b2", fontSize:13 }}>Локальная разработка — сервер + клиент</div>
+        </div>
         <ChatTest />
       </div>
+
       <div>
-        <h2>Задачи</h2>
+        <div style={{ marginBottom:12 }}>
+          <h2 style={{ margin:0, color:"#fff" }}>Задачи</h2>
+          <div style={{ color:"#9aa3b2", fontSize:13 }}>Kanban</div>
+        </div>
         <Kanban />
       </div>
     </div>
