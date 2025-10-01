@@ -3,10 +3,12 @@ using Microsoft.EntityFrameworkCore;
 using Server.Data;
 using Server.Models;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 
 namespace Server.Controllers
 {
+    // Контроллер для задач (CRUD)
     [ApiController]
     [Route("api/[controller]")]
     public class TasksController : ControllerBase
@@ -14,6 +16,8 @@ namespace Server.Controllers
         private readonly AppDbContext _db;
         public TasksController(AppDbContext db) => _db = db;
 
+        // GET api/tasks
+        // Возвращает все задачи (сортировка по статусу)
         [HttpGet]
         public async Task<ActionResult<List<TaskItem>>> GetAll()
         {
@@ -24,6 +28,7 @@ namespace Server.Controllers
             return Ok(tasks);
         }
 
+        // GET api/tasks/{id}
         [HttpGet("{id}")]
         public async Task<ActionResult<TaskItem>> Get(int id)
         {
@@ -32,14 +37,22 @@ namespace Server.Controllers
             return Ok(task);
         }
 
+        // POST api/tasks
+        // Создаёт задачу и возвращает созданный объект
         [HttpPost]
         public async Task<ActionResult<TaskItem>> Create(TaskItem model)
         {
+            // Обеспечим статус по умолчанию, если не задан
+            if (string.IsNullOrWhiteSpace(model.Status))
+                model.Status = "todo";
+
             _db.Tasks.Add(model);
             await _db.SaveChangesAsync();
             return CreatedAtAction(nameof(Get), new { id = model.Id }, model);
         }
 
+        // PUT api/tasks/{id}
+        // Обновление задачи (полная замена полей, простая реализация)
         [HttpPut("{id}")]
         public async Task<ActionResult> Update(int id, TaskItem model)
         {
@@ -53,6 +66,8 @@ namespace Server.Controllers
             return NoContent();
         }
 
+        // DELETE api/tasks/{id}
+        // Удаляет задачу из БД
         [HttpDelete("{id}")]
         public async Task<ActionResult> Delete(int id)
         {
