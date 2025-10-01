@@ -30,21 +30,23 @@ namespace Server.Hubs
             await base.OnDisconnectedAsync(exception);
         }
 
-        public async Task SendMessage(string user, string message)
-        {
-            _logger.LogInformation("SendMessage from {User}: {Message}", user, message);
+public async Task SendMessage(string user, string message, int? taskId = null)
+{
+    _logger.LogInformation("SendMessage from {User}: {Message}", user, message);
 
-            var msg = new Message
-            {
-                User = user,
-                Text = message,
-                CreatedAt = DateTime.UtcNow
-            };
+    var msg = new Message
+    {
+        User = user,
+        Text = message,
+        CreatedAt = DateTime.UtcNow,
+        TaskId = taskId
+    };
 
-            _db.Messages.Add(msg);
-            await _db.SaveChangesAsync();
+    _db.Messages.Add(msg);
+    await _db.SaveChangesAsync();
 
-            await Clients.All.SendAsync("ReceiveMessage", msg.User, msg.Text, msg.CreatedAt);
-        }
+    await Clients.All.SendAsync("ReceiveMessage", msg.User, msg.Text, msg.CreatedAt, msg.TaskId);
+}
+        
     }
 }
