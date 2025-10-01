@@ -1,70 +1,91 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.SignalR;
 using Server.Data;
 using Server.Models;
+using Server.Hubs;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 
 namespace Server.Controllers
 {
-    // Контроллер для работы с сообщениями (история, привязка к задаче)
     [ApiController]
     [Route("api/[controller]")]
     public class MessagesController : ControllerBase
     {
         private readonly AppDbContext _db;
-        public MessagesController(AppDbContext db) => _db = db;
+        private readonly IHubContext<ChatHub> _hub;
 
-        // GET api/messages?limit=100
-        // Возвращает историю сообщений (по умолчанию последние 100)
+        public MessagesController(AppDbContext db, IHubContext<ChatHub> hub)
+        {
+            _db = db;
+            _hub = hub;
+        }
+
+        // GET api/messages?chatId=general
         [HttpGet]
-        public async Task<ActionResult<List<Message>>> GetHistory(int limit = 100)
+        public async Task<ActionResult<List<Message>>> Get(string? chatId = null, int limit = 500)
         {
-            var messages = await _db.Messages
-                .AsNoTracking()
-                .OrderByDescending(m => m.CreatedAt)
-                .Take(limit)
-                .ToListAsync();
-
-            messages.Reverse(); // возвращаем в хронологическом порядке
-            return Ok(messages);
+            var q = _db.Messages.AsNoTracking().AsQueryable();
+            if (!string.IsNullOrEmpty(chatId)) q = q.Where(m => m.ChatId == chatId);
+            var list = await q.OrderBy(m => m.CreatedAt).Take(limit).ToListAsync();
+            return Ok(list);
         }
 
-        // GET api/messages/{id}
-        // Возвращает одно сообщение по id
         [HttpGet("{id}")]
-        public async Task<ActionResult<Message>> Get(int id)
+        public async Task<ActionResult<Message>> GetOne(int id)
         {
-            var msg = await _db.Messages.FindAsync(id);
-            if (msg == null) return NotFound();
-            return Ok(msg);
+            var m = await _db.Messages.FindAsync(id);
+            if (m == null) return NotFound();
+            return Ok(m);
         }
 
-        // PATCH api/messages/{messageId}/assignTask/{taskId}
-        // Привязать сообщение к задаче (устанавливает TaskId у сообщения)
-        [HttpPatch("{messageId}/assignTask/{taskId}")]
-        public async Task<ActionResult> AssignTask(int messageId, int taskId)
+        [HttpPatch("{id}")]
+        public async Task<ActionResult> Patch(int id, [FromBody] EditDto dto)
         {
-            var msg = await _db.Messages.FindAsync(messageId);
-            if (msg == null) return NotFound();
-            var task = await _db.Tasks.FindAsync(taskId);
-            if (task == null) return NotFound();
-            msg.TaskId = taskId;
+            var m = await _db.Messages.FindAsync(id);
+            if (m == null) return NotFound();
+            if (dto.Text != null) m.Text = dto.Text;
+            if (dto.TaskId.HasValue) m.TaskId = dto.TaskId;
             await _db.SaveChangesAsync();
+
+            // notify hub about updated message
+            await _hub.Clients.All.SendAsync("MessageUpdated", m);
             return NoContent();
         }
 
-        // DELETE api/messages/{id}
-        // Удаляет сообщение (удаляет запись из БД)
         [HttpDelete("{id}")]
         public async Task<ActionResult> Delete(int id)
         {
-            var msg = await _db.Messages.FindAsync(id);
-            if (msg == null) return NotFound();
-            _db.Messages.Remove(msg);
+            var m = await _db.Messages.FindAsync(id);
+            if (m == null) return NotFound();
+            _db.Messages.Remove(m);
             await _db.SaveChangesAsync();
             return NoContent();
+        }
+
+        // PATCH api/messages/{id}/assignTask/{taskId}
+        [HttpPatch("{id}/assignTask/{taskId}")]
+        public async Task<ActionResult> AssignTask(int id, int taskId)
+        {
+            var m = await _db.Messages.FindAsync(id);
+            if (m == null) return NotFound();
+            var t = await _db.Tasks.FindAsync(taskId);
+            if (t == null) return NotFound(new { error = "Task not found" });
+
+            m.TaskId = taskId;
+            await _db.SaveChangesAsync();
+
+            // notify hub about message change
+            await _hub.Clients.All.SendAsync("MessageUpdated", m);
+            return NoContent();
+        }
+
+        public class EditDto
+        {
+            public string? Text { get; set; }
+            public int? TaskId { get; set; }
         }
     }
 }

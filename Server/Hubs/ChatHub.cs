@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.SignalR;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Server.Data;
 using Server.Models;
@@ -7,7 +8,6 @@ using System.Threading.Tasks;
 
 namespace Server.Hubs
 {
-    // SignalR Hub для чата — сохраняет сообщения в БД и рассылает полный объект Message клиентам
     public class ChatHub : Hub
     {
         private readonly ILogger<ChatHub> _logger;
@@ -21,35 +21,51 @@ namespace Server.Hubs
 
         public override async Task OnConnectedAsync()
         {
-            _logger.LogInformation("Client connected: {ConnectionId}", Context.ConnectionId);
+            _logger.LogInformation("Connected: {Id}", Context.ConnectionId);
             await base.OnConnectedAsync();
         }
 
-        public override async Task OnDisconnectedAsync(Exception? exception)
+        public override async Task OnDisconnectedAsync(Exception? ex)
         {
-            _logger.LogInformation("Client disconnected: {ConnectionId}, error: {Error}", Context.ConnectionId, exception?.Message);
-            await base.OnDisconnectedAsync(exception);
+            _logger.LogInformation("Disconnected: {Id} ({Err})", Context.ConnectionId, ex?.Message);
+            await base.OnDisconnectedAsync(ex);
         }
 
-        // Принимает параметры: user, message, optional taskId
-        // Сохраняет Message в БД и рассылает всем клиентам полный объект сообщения с Id
-        public async Task SendMessage(string user, string message, int? taskId = null)
+        public async Task SendMessage(string user, string message, int? taskId = null, string? chatId = null)
         {
-            _logger.LogInformation("SendMessage from {User}: {Message}", user, message);
-
-            var msg = new Message
+            try
             {
-                User = user ?? "Unknown",
-                Text = message ?? string.Empty,
-                CreatedAt = DateTime.UtcNow,
-                TaskId = taskId
-            };
+                var msg = new Message
+                {
+                    User = user ?? "Unknown",
+                    Text = message ?? string.Empty,
+                    CreatedAt = DateTime.UtcNow,
+                    TaskId = taskId,
+                    ChatId = chatId
+                };
 
-            _db.Messages.Add(msg);
-            await _db.SaveChangesAsync();
+                _db.Messages.Add(msg);
+                await _db.SaveChangesAsync();
 
-            // Отправляем всем полную модель сообщения (сгенерированный Id и CreatedAt)
-            await Clients.All.SendAsync("ReceiveMessage", msg);
+                await Clients.All.SendAsync("ReceiveMessage", msg);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "SendMessage failed");
+                throw;
+            }
+        }
+
+        public async Task NotifyTasksUpdated()
+        {
+            var tasks = await _db.Tasks.AsNoTracking().ToListAsync();
+            await Clients.All.SendAsync("TasksUpdated", tasks);
+        }
+
+        public async Task NotifyMessageUpdated(int messageId)
+        {
+            var msg = await _db.Messages.AsNoTracking().FirstOrDefaultAsync(m => m.Id == messageId);
+            if (msg != null) await Clients.All.SendAsync("MessageUpdated", msg);
         }
     }
 }
