@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 
 namespace Server.Hubs
 {
+    // SignalR Hub для чата — сохраняет сообщения в БД и рассылает полный объект Message клиентам
     public class ChatHub : Hub
     {
         private readonly ILogger<ChatHub> _logger;
@@ -30,23 +31,25 @@ namespace Server.Hubs
             await base.OnDisconnectedAsync(exception);
         }
 
-public async Task SendMessage(string user, string message, int? taskId = null)
-{
-    _logger.LogInformation("SendMessage from {User}: {Message}", user, message);
+        // Принимает параметры: user, message, optional taskId
+        // Сохраняет Message в БД и рассылает всем клиентам полный объект сообщения с Id
+        public async Task SendMessage(string user, string message, int? taskId = null)
+        {
+            _logger.LogInformation("SendMessage from {User}: {Message}", user, message);
 
-    var msg = new Message
-    {
-        User = user,
-        Text = message,
-        CreatedAt = DateTime.UtcNow,
-        TaskId = taskId
-    };
+            var msg = new Message
+            {
+                User = user ?? "Unknown",
+                Text = message ?? string.Empty,
+                CreatedAt = DateTime.UtcNow,
+                TaskId = taskId
+            };
 
-    _db.Messages.Add(msg);
-    await _db.SaveChangesAsync();
+            _db.Messages.Add(msg);
+            await _db.SaveChangesAsync();
 
-    await Clients.All.SendAsync("ReceiveMessage", msg.User, msg.Text, msg.CreatedAt, msg.TaskId);
-}
-        
+            // Отправляем всем полную модель сообщения (сгенерированный Id и CreatedAt)
+            await Clients.All.SendAsync("ReceiveMessage", msg);
+        }
     }
 }

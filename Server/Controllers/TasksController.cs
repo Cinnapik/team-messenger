@@ -8,7 +8,7 @@ using System.Threading.Tasks;
 
 namespace Server.Controllers
 {
-    // Контроллер для задач (CRUD)
+    // Контроллер для задач (CRUD) + получение связанных сообщений
     [ApiController]
     [Route("api/[controller]")]
     public class TasksController : ControllerBase
@@ -17,7 +17,6 @@ namespace Server.Controllers
         public TasksController(AppDbContext db) => _db = db;
 
         // GET api/tasks
-        // Возвращает все задачи (сортировка по статусу)
         [HttpGet]
         public async Task<ActionResult<List<TaskItem>>> GetAll()
         {
@@ -38,11 +37,9 @@ namespace Server.Controllers
         }
 
         // POST api/tasks
-        // Создаёт задачу и возвращает созданный объект
         [HttpPost]
         public async Task<ActionResult<TaskItem>> Create(TaskItem model)
         {
-            // Обеспечим статус по умолчанию, если не задан
             if (string.IsNullOrWhiteSpace(model.Status))
                 model.Status = "todo";
 
@@ -52,7 +49,6 @@ namespace Server.Controllers
         }
 
         // PUT api/tasks/{id}
-        // Обновление задачи (полная замена полей, простая реализация)
         [HttpPut("{id}")]
         public async Task<ActionResult> Update(int id, TaskItem model)
         {
@@ -67,7 +63,6 @@ namespace Server.Controllers
         }
 
         // DELETE api/tasks/{id}
-        // Удаляет задачу из БД
         [HttpDelete("{id}")]
         public async Task<ActionResult> Delete(int id)
         {
@@ -76,6 +71,19 @@ namespace Server.Controllers
             _db.Tasks.Remove(task);
             await _db.SaveChangesAsync();
             return NoContent();
+        }
+
+        // GET api/tasks/{id}/messages
+        // Возвращает сообщения, у которых TaskId == id, в хронологическом порядке
+        [HttpGet("{id}/messages")]
+        public async Task<ActionResult<List<Message>>> GetMessagesForTask(int id)
+        {
+            var msgs = await _db.Messages
+                .AsNoTracking()
+                .Where(m => m.TaskId == id)
+                .OrderBy(m => m.CreatedAt)
+                .ToListAsync();
+            return Ok(msgs);
         }
     }
 }

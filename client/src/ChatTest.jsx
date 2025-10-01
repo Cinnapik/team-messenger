@@ -2,26 +2,28 @@ import React, { useEffect, useState } from "react";
 import * as signalR from "@microsoft/signalr";
 
 /*
-  client/src/ChatTest.jsx
-  Полностью готовый компонент чата для тёмной темы.
-  Обратите внимание: styles.css должен быть импортирован в App.jsx / main.jsx.
+  ChatTest.jsx
+  - Принимает событие ReceiveMessage с полным объектом msg
+  - Помечает каждый div сообщения атрибутом data-message-id
+  - Реагирует на window.scrollToMessageId (устанавливается из Kanban), скроллит к сообщению
+  - Меню у сообщения открывается по клику/hover (см. стили)
 */
 
 export default function ChatTest() {
   const [connection, setConnection] = useState(null);
   const [messages, setMessages] = useState([]);
   const [text, setText] = useState("");
-
-  const SHOW_TASK_BUTTONS = true; // false — скрыть кнопки у сообщений
+  const [openMenuIndex, setOpenMenuIndex] = useState(null);
   const messagesEndRef = React.useRef(null);
 
-  // Загрузка истории и подключение SignalR
   useEffect(() => {
+    // Загрузка истории (получаем объекты с id и CreatedAt)
     fetch("http://localhost:5028/api/messages")
       .then(r => r.json())
       .then(data => setMessages(data || []))
       .catch(err => console.error("History fetch error:", err));
 
+    // Подключение к SignalR
     const conn = new signalR.HubConnectionBuilder()
       .withUrl("http://localhost:5028/hubs/chat")
       .withAutomaticReconnect()
@@ -32,69 +34,129 @@ export default function ChatTest() {
       .then(() => console.log("SignalR connected"))
       .catch(err => console.error("SignalR start error:", err));
 
-    conn.on("ReceiveMessage", (user, message, createdAt, taskId) => {
-      // Если сервер присылает созданное сообщение, добавляем его
-      setMessages(prev => [...prev, { id: null, user, text: message, createdAt, taskId }]);
+    // Ожидаем полный объект сообщения от сервера
+    conn.on("ReceiveMessage", (msg) => {
+      console.log("ReceiveMessage event:", msg);
+      setMessages(prev => [...prev, {
+        id: msg.id ?? msg.Id ?? null,
+        user: msg.user ?? msg.User ?? "Unknown",
+        text: msg.text ?? msg.Text ?? "",
+        createdAt: msg.createdAt ?? msg.CreatedAt,
+        taskId: msg.taskId ?? msg.TaskId ?? null
+      }]);
     });
 
     setConnection(conn);
-    return () => { conn.stop().catch(()=>{}); };
+
+    return () => {
+      conn.stop().catch(() => {});
+    };
   }, []);
 
-  useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
+  // Автоскролл при приходе новых сообщений
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
 
-  // Небольшая утилита подсказок
-  function getSuggestions(text){
+    // Обработка глобального запроса скролла к сообщению
+    if (window.scrollToMessageId) {
+      const id = window.scrollToMessageId;
+      window.scrollToMessageId = null;
+      // Найти элемент по data-message-id
+      const el = document.querySelector(`[data-message-id="${id}"]`);
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        // подсветка (временная)
+        el.style.transition = "box-shadow 0.3s";
+        el.style.boxShadow = "0 0 0 3px rgba(30,144,255,0.12)";
+        setTimeout(() => { el.style.boxShadow = ""; }, 1600);
+      } else {
+        console.warn("Message element not found for id", id);
+      }
+    }
+  }, [messages]);
+
+  // Небольшая rule-based подсказка (помощник)
+  function getSuggestions(text) {
     const rules = [
-      { kw: ["ошибк","bug","фикс"], title:"Исправить ошибку", description:`Обнаружена проблема: ${text}` },
-      { kw: ["рефактор","оптимиз","перепис"], title:"Рефакторинг", description:`Рефакторинг: ${text}` },
-      { kw: ["добав","реализ","имплем"], title:"Добавить функционал", description:`Добавить: ${text}` }
+      { kw: ["ошибк", "bug", "фикс"], title: "Исправить ошибку", description: `Обнаружена проблема: ${text}` },
+      { kw: ["рефактор", "оптимиз"], title: "Рефакторинг", description: `Требуется рефакторинг: ${text}` },
+      { kw: ["добав", "реализ"], title: "Добавить функционал", description: `Добавить: ${text}` }
     ];
-    const low = (text||"").toLowerCase();
-    return rules.filter(r => r.kw.some(k => low.includes(k))).map(r => ({title:r.title, description:r.description}));
+    const low = (text || "").toLowerCase();
+    return rules.filter(r => r.kw.some(k => low.includes(k))).map(r => ({ title: r.title, description: r.description }));
   }
 
-  // Создать задачу из сообщения и привязать через API
   const createTaskFromMessage = async (message) => {
-    const title = prompt("Название задачи:", (message.text||"").slice(0,50));
+    const title = prompt("Название задачи:", (message.text || "").slice(0, 50));
     if (!title) return;
-    const desc = prompt("Описание задачи:", message.text||"") || "";
+    const desc = prompt("Описание задачи:", message.text || "") || "";
     try {
       const res = await fetch("http://localhost:5028/api/tasks", {
-        method:"POST",
-        headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({ title, description: desc, status:"todo" })
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title, description: desc, status: "todo" })
       });
       if (!res.ok) throw new Error("Ошибка создания задачи");
       const created = await res.json();
+      // Привязать сообщение к задаче, если у сообщения есть id
       if (message.id) {
-        await fetch(`http://localhost:5028/api/messages/${message.id}/assignTask/${created.id}`, { method:"PATCH" });
+        await fetch(`http://localhost:5028/api/messages/${message.id}/assignTask/${created.id}`, { method: "PATCH" });
+        // обновим локальный state, поставив taskId у сообщения
+        setMessages(prev => prev.map(m => m.id === message.id ? { ...m, taskId: created.id } : m));
       }
       if (window.fetchTasksGlobal) window.fetchTasksGlobal();
       alert("Задача создана и привязана");
-    } catch(e){
+      setOpenMenuIndex(null);
+    } catch (e) {
       console.error(e);
-      alert("Ошибка создания задачи");
+      alert("Ошибка при создании задачи");
     }
   };
 
-  // Отправка сообщения через SignalR
+  const assistantAction = (message) => {
+    const suggestions = getSuggestions(message.text);
+    if (!suggestions.length) return alert("Помощник: предложений нет");
+    const s = suggestions[0];
+    if (confirm(`Помощник предлагает:\n${s.title}\n\nСоздать?`)) {
+      fetch("http://localhost:5028/api/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: s.title, description: s.description, status: "todo" })
+      }).then(async (r) => {
+        if (r.ok) {
+          const created = await r.json();
+          if (message.id) {
+            await fetch(`http://localhost:5028/api/messages/${message.id}/assignTask/${created.id}`, { method: "PATCH" });
+            setMessages(prev => prev.map(m => m.id === message.id ? { ...m, taskId: created.id } : m));
+          }
+          if (window.fetchTasksGlobal) window.fetchTasksGlobal();
+          alert("Задача создана");
+        } else {
+          alert("Ошибка создания задачи");
+        }
+      });
+    }
+    setOpenMenuIndex(null);
+  };
+
+  const deleteMessage = async (message) => {
+    if (!confirm("Удалить сообщение?")) return;
+    if (message.id) await fetch(`http://localhost:5028/api/messages/${message.id}`, { method: "DELETE" });
+    setMessages(prev => prev.filter(m => m !== message && m.id !== message.id));
+    setOpenMenuIndex(null);
+  };
+
   const send = async () => {
     if (!text) return;
-    if (!connection || connection.state !== "Connected") {
-      alert("Не подключено к серверу");
-      return;
-    }
+    if (!connection || connection.state !== "Connected") { alert("Не подключено"); return; }
     try {
-      await connection.invoke("SendMessage","You", text, null);
+      await connection.invoke("SendMessage", "You", text, null);
       setText("");
-    } catch(e){
+    } catch (e) {
       console.error("Invoke error:", e);
       alert("Ошибка при отправке");
     }
   };
-
-  const btnStyle = { padding:"6px 10px", fontSize:13, borderRadius:6, border:"none", cursor:"pointer" };
 
   return (
     <div className="panel chat-panel">
@@ -102,45 +164,47 @@ export default function ChatTest() {
 
       <div className="chat-history" role="list">
         {messages.map((m, i) => (
-          <div key={i} className="msg" role="listitem">
+          <div
+            key={i}
+            className="msg"
+            data-message-id={m.id ?? ""}
+            role="listitem"
+            onMouseEnter={() => setOpenMenuIndex(i)}
+            onMouseLeave={() => setOpenMenuIndex((idx) => idx === i ? null : idx)}
+          >
             <div className="msg-header">
-              <div className="msg-user">{m.user}</div>
-              <div className="msg-time">{m.createdAt ? new Date(m.createdAt).toLocaleString() : ""}</div>
-            </div>
-            <div className="msg-text">{m.text}</div>
-
-            {SHOW_TASK_BUTTONS && (
-              <div className="msg-actions">
-                <button className="btn btn-primary" style={btnStyle} onClick={() => createTaskFromMessage(m)}>Создать задачу</button>
-
-                <button className="btn btn-secondary" style={btnStyle} onClick={() => {
-                  const suggestions = getSuggestions(m.text);
-                  if (!suggestions.length) return alert("Нет предложений");
-                  const s = suggestions[0];
-                  if (confirm(`Помощник предлагает:\n${s.title}\n\nСоздать?`)) {
-                    fetch("http://localhost:5028/api/tasks", {
-                      method:"POST",
-                      headers:{"Content-Type":"application/json"},
-                      body: JSON.stringify({ title:s.title, description:s.description, status:"todo" })
-                    }).then(()=>{ if (window.fetchTasksGlobal) window.fetchTasksGlobal(); alert("Создано"); });
-                  }
-                }}>Помощник</button>
-
-                <button className="btn btn-danger" style={btnStyle} onClick={async () => {
-                  if (!confirm("Удалить сообщение?")) return;
-                  if (m.id) await fetch(`http://localhost:5028/api/messages/${m.id}`, { method:"DELETE" });
-                  setMessages(prev => prev.filter(x => x !== m && x.id !== m.id));
-                }}>Удалить</button>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <div className="msg-user">{m.user}</div>
+                <div className="msg-time">{m.createdAt ? new Date(m.createdAt).toLocaleString() : ""}</div>
+                {m.taskId ? <span style={{ marginLeft: 8, fontSize: 12, color: "#9aa3b2" }}>🔗 Задача #{m.taskId}</span> : null}
               </div>
-            )}
+
+              <div>
+                <button
+                  className="msg-menu-btn"
+                  aria-label="Меню сообщения"
+                  onClick={(e) => { e.stopPropagation(); setOpenMenuIndex(openMenuIndex === i ? null : i); }}
+                >
+                  &#x22EE;
+                </button>
+
+                <div className={`msg-menu ${openMenuIndex === i ? "" : "hidden"}`} onClick={(e) => e.stopPropagation()}>
+                  <button onClick={() => createTaskFromMessage(m)}>Создать задачу</button>
+                  <button onClick={() => assistantAction(m)}>Помощник</button>
+                  <button onClick={() => deleteMessage(m)} style={{ color: "var(--danger)" }}>Удалить</button>
+                </div>
+              </div>
+            </div>
+
+            <div className="msg-text">{m.text}</div>
           </div>
         ))}
         <div ref={messagesEndRef} />
       </div>
 
-      <div className="chat-input-row" style={{ marginTop:8 }}>
+      <div className="chat-input-row" style={{ marginTop: 8 }}>
         <input className="chat-input" value={text} onChange={e => setText(e.target.value)} placeholder="Напишите сообщение..." />
-        <button className="btn btn-primary" onClick={send} disabled={!connection || connection.state !== "Connected"} style={{ padding:"8px 12px" }}>
+        <button className="btn btn-primary" onClick={send} disabled={!connection || connection.state !== "Connected"} style={{ padding: "8px 12px" }}>
           {(!connection || connection.state !== "Connected") ? "Отключено" : "Отправить"}
         </button>
       </div>
