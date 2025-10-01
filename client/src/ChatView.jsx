@@ -1,207 +1,140 @@
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import * as signalR from "@microsoft/signalr";
 
-export default function ChatView({ chatId = "general", user }) {
+const LAST_N = 200;
+
+export default function ChatView({ chatId = "general", user, onOpenChatInfo }) {
   const [messages, setMessages] = useState([]);
   const [text, setText] = useState("");
-  const [conn, setConn] = useState(null);
-  const [status, setStatus] = useState("connecting");
-  const [retry, setRetry] = useState(0);
-  const [context, setContext] = useState(null);
+  const [ctxMenu, setCtxMenu] = useState(null);
   const listRef = useRef(null);
-  const inputRef = useRef(null);
 
-  const normalize = useCallback(
-    (raw) => ({
-      id: raw?.id ?? raw?.Id,
-      user: raw?.user ?? raw?.User,
-      text: raw?.text ?? raw?.Text,
-      createdAt: raw?.createdAt ?? raw?.CreatedAt ?? new Date().toISOString(),
-      chatId: raw?.chatId ?? raw?.ChatId ?? chatId,
-      taskId: raw?.taskId ?? raw?.TaskId ?? null,
-    }),
-    [chatId]
-  );
+  const normalize = useCallback((r) => ({
+    id: r?.id ?? r?.Id,
+    user: r?.user ?? r?.User,
+    text: r?.text ?? r?.Text,
+    createdAt: r?.createdAt ?? r?.CreatedAt ?? new Date().toISOString(),
+    chatId: r?.chatId ?? r?.ChatId ?? chatId,
+    taskId: r?.taskId ?? r?.TaskId ?? null,
+  }), [chatId]);
 
   useEffect(() => {
-    const loadHistory = async () => {
+    const fetchMessages = async () => {
       try {
-        const res = await fetch(`/api/messages?chatId=${encodeURIComponent(chatId)}`);
+        const res = await fetch(`/api/messages?chatId=${encodeURIComponent(chatId)}&limit=${LAST_N}`);
         if (!res.ok) { setMessages([]); return; }
-        const body = await res.json().catch(() => null);
-        const arr = Array.isArray(body) ? body.map(normalize) : [];
-        setMessages(arr);
-
-        // если кто-то вызвал переход к сообщению — прокрутить после загрузки
-        setTimeout(() => {
-          const gotoId = window.scrollToMessageId;
-          if (gotoId) {
-            const el = document.getElementById(`msg-${gotoId}`);
-            if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
-            window.scrollToMessageId = null;
-          }
-        }, 120);
-      } catch {
-        setMessages([]);
-      }
+        const data = await res.json().catch(() => []);
+        const arr = Array.isArray(data) ? data.map(normalize) : [];
+        const sorted = arr.sort((a,b)=>new Date(a.createdAt)-new Date(b.createdAt));
+        setMessages(sorted.slice(-LAST_N));
+      } catch { setMessages([]); }
     };
-    loadHistory();
-  }, [chatId, normalize, retry]);
+    fetchMessages();
+    window.fetchMessagesGlobal = fetchMessages;
+  }, [chatId, normalize]);
 
   useEffect(() => {
-    let stopped = false;
-    let connection = null;
-    const backoffSeconds = Math.min(30, Math.pow(2, Math.min(6, retry)));
-
-    const start = async () => {
-      setStatus("connecting");
-      connection = new signalR.HubConnectionBuilder()
-        .withUrl("/hubs/chat")
-        .withAutomaticReconnect()
-        .configureLogging(signalR.LogLevel.Error)
-        .build();
-
-      connection.onclose(() => {
-        if (stopped) return;
-        setStatus("disconnected");
-        setTimeout(() => setRetry((r) => r + 1), backoffSeconds * 1000);
+    const conn = new signalR.HubConnectionBuilder().withUrl("/hubs/chat").withAutomaticReconnect().configureLogging(signalR.LogLevel.Error).build();
+    window._tm_conn = conn;
+    conn.start().catch(()=>{});
+    conn.on("ReceiveMessage", (msg) => {
+      if (!msg) return;
+      if (msg.chatId && String(msg.chatId) !== String(chatId)) return;
+      setMessages(prev => {
+        const next = [...prev, normalize(msg)];
+        return next.slice(-LAST_N);
       });
-
-      connection.on("ReceiveMessage", (msg) => {
-        try {
-          if (!msg) return;
-          if (msg.chatId && String(msg.chatId) !== String(chatId)) return;
-          setMessages((prev) => [...prev, normalize(msg)]);
-          inputRef.current?.focus();
-        } catch (ex) { console.warn(ex); }
-      });
-
-      connection.on("MessageUpdated", (payload) => {
-        try {
-          if (Array.isArray(payload)) {
-            const updated = payload.map(normalize);
-            setMessages((prev) => prev.map((x) => updated.find((u) => u.id === x.id) ?? x));
-          } else {
-            const updated = normalize(payload);
-            setMessages((prev) => prev.map((x) => (x.id === updated.id ? updated : x)));
-          }
-        } catch (ex) { console.warn(ex); }
-      });
-
-      connection.on("TasksUpdated", () => {
-        if (window.fetchTasksGlobal) window.fetchTasksGlobal();
-      });
-
-      try {
-        await connection.start();
-        if (stopped) { connection.stop().catch(() => {}); return; }
-        setConn(connection);
-        setStatus("connected");
-        setRetry(0);
-      } catch {
-        setStatus("disconnected");
-        setTimeout(() => setRetry((r) => r + 1), backoffSeconds * 1000);
-      }
-    };
-
-    start();
-
-    return () => {
-      stopped = true;
-      if (connection) connection.stop().catch(() => {});
-      setConn(null);
-      setStatus("disconnected");
-    };
-  }, [chatId, normalize, retry]);
+    });
+    conn.on("MessageUpdated", (msg) => {
+      if (!msg) return;
+      const u = normalize(msg);
+      setMessages(prev => prev.map(m => m.id === u.id ? u : m));
+    });
+    return () => { conn.stop().catch(()=>{}); window._tm_conn = null; };
+  }, [chatId, normalize]);
 
   useEffect(() => {
     const el = listRef.current;
-    if (!el) return;
-    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+    if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
   }, [messages]);
 
   const send = async () => {
     if (!text) return;
-    if (!conn || conn.state !== "Connected") { alert("Нет соединения с сервером"); return; }
+    const saved = localStorage.getItem("tm_user"); if (!saved) return alert("Войдите");
+    const userObj = JSON.parse(saved);
     try {
-      await conn.invoke("SendMessage", user.name, text, null, chatId);
+      const conn = window._tm_conn;
+      if (conn && conn.invoke) await conn.invoke("SendMessage", userObj.name, text, null, chatId);
+      else await fetch("/api/messages", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ user: userObj.name, text, chatId }) });
       setText("");
-      inputRef.current?.focus();
-    } catch (ex) { console.error("Send error", ex); alert("Ошибка отправки"); }
+      if (window.fetchMessagesGlobal) window.fetchMessagesGlobal();
+    } catch { alert("Ошибка отправки"); }
   };
 
-  const onMessageContext = (index, e) => {
+  const onContext = (e, msg) => {
     e.preventDefault();
-    setContext({ index, x: e.clientX, y: e.clientY });
+    setCtxMenu({ x: e.clientX, y: e.clientY, msg });
   };
 
-  const closeContext = () => setContext(null);
+  const closeCtx = () => setCtxMenu(null);
+
+  const assignTask = async (m) => {
+    const title = prompt("Название задачи:", (m.text||"").slice(0,70)); if (!title) return;
+    const r = await fetch("/api/tasks",{ method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ title, description: m.text, status: "todo" }) });
+    if (!r.ok) return alert("Ошибка");
+    const created = await r.json();
+    if (m.id) await fetch(`/api/messages/${m.id}/assignTask/${created.id}`,{ method:"PATCH" });
+    closeCtx();
+    if (window.fetchTasksGlobal) window.fetchTasksGlobal();
+  };
 
   const deleteMsg = async (m) => {
-    if (!confirm("Удалить?")) return;
-    await fetch(`/api/messages/${m.id}`, { method: "DELETE" });
-    setMessages((prev) => prev.filter((x) => x.id !== m.id));
-    setContext(null);
-  };
-
-  const createTaskFrom = async (m) => {
-    const title = prompt("Название задачи:", (m.text || "").slice(0, 60));
-    if (!title) return;
-    const res = await fetch("/api/tasks", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title, description: m.text, status: "todo" }) });
-    if (!res.ok) { alert("Ошибка создания задачи"); setContext(null); return; }
-    const created = await res.json().catch(() => null);
-
-    // persist relation on server
-    if (created && m.id) {
-      await fetch(`/api/messages/${m.id}/assignTask/${created.id}`, { method: "PATCH" });
-    }
-
-    setMessages((prev) => prev.map((x) => x.id === m.id ? { ...x, taskId: created?.id ?? x.taskId } : x));
-    if (window.fetchTasksGlobal) window.fetchTasksGlobal();
-    setContext(null);
+    if (!confirm("Удалить сообщение?")) return;
+    await fetch(`/api/messages/${m.id}`,{ method:"DELETE" });
+    setMessages(prev=>prev.filter(x=>x.id!==m.id));
+    closeCtx();
   };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+    <div style={{display:"flex",flexDirection:"column",height:"100%"}} onClick={closeCtx}>
       <div className="chat-header">
-        <div><div style={{ fontWeight: 700 }}>Chat: {chatId}</div><div className="small">Участники: You, Lina, Global</div></div>
-        <div className="small" style={{ textTransform: "uppercase" }}>{status === "connected" ? <span style={{ color: "var(--accent)" }}>Online</span> : status === "connecting" ? <span>Connecting...</span> : <span style={{ color: "var(--danger)" }}>Offline</span>}</div>
+        <div>
+          <div className="chat-title" onClick={() => { if (onOpenChatInfo) onOpenChatInfo(); }} style={{cursor:"pointer"}}>Чат: {chatId}</div>
+        </div>
+        <div style={{fontSize:13,color:"var(--muted)"}}>{Array.isArray(messages) ? messages.length : 0} сообщений</div>
       </div>
 
-      <div className="chat-area">
-        <div className="messages-wrap" ref={listRef}>
-          {messages.map((msg, i) => (
-            <div id={`msg-${msg.id ?? i}`} key={msg.id ?? i} className={"msg" + (msg.user === user.name ? " me" : "")} onContextMenu={(e) => onMessageContext(i, e)}>
-              <div className="msg-avatar" style={{ background: msg.user === user.name ? user.color : undefined }}>{(msg.user || "U").slice(0, 1).toUpperCase()}</div>
-
-              <div style={{ minWidth: 0, flex: 1 }}>
-                <div className={"bubble" + (msg.user === user.name ? " me" : "")}>
-                  <div className="meta">
-                    <div className="user">{msg.user}</div>
-                    <div className="time">{new Date(msg.createdAt).toLocaleString()}</div>
-                  </div>
-
-                  <div className="text">{msg.text}</div>
-                  {msg.taskId ? <div style={{ marginTop: 8 }} className="card"><strong>Задача #{msg.taskId}</strong></div> : null}
+      <div className="messages-area" ref={listRef}>
+        {messages.map((m,i)=>(
+          <div key={m.id ?? i} className={"msg"+(m.user===user.name?" me":"")} onContextMenu={(e)=>onContext(e,m)}>
+            <div className="msg-avatar" style={{background: m.user===user.name ? (user.color||"#0db0ff") : "linear-gradient(135deg,var(--accent),var(--accent-2))"}}>{(m.user||"U").slice(0,1).toUpperCase()}</div>
+            <div style={{minWidth:0,flex:1}}>
+              <div className={"bubble"+(m.user===user.name?" me":"")}>
+                <div className="meta">
+                  <div className="user">{m.user}</div>
+                  <div className="time">{new Date(m.createdAt).toLocaleString()}</div>
                 </div>
+                <div className="text">{m.text}</div>
+                {m.taskId ? <div className="task-badge">Задача #{m.taskId}</div> : null}
               </div>
             </div>
-          ))}
-        </div>
-
-        {context && (
-          <div className="context-menu" style={{ left: context.x ?? undefined, top: context.y ?? undefined, right: context.x ? undefined : 12 }}>
-            <button onClick={() => createTaskFrom(messages[context.index])}>Создать задачу</button>
-            <button onClick={() => deleteMsg(messages[context.index])} style={{ color: "var(--danger)" }}>Удалить</button>
-            <button onClick={closeContext}>Закрыть</button>
           </div>
-        )}
-
-        <div className="input-bar">
-          <input ref={inputRef} className="input" placeholder="Напишите сообщение..." value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }} />
-          <button className="send" onClick={send} disabled={status !== "connected"}>Отправить</button>
-        </div>
+        ))}
       </div>
+
+      <div className="composer-row">
+        <input value={text} onChange={e=>setText(e.target.value)} placeholder="Напишите сообщение..." onKeyDown={e=>{ if(e.key==="Enter" && !e.shiftKey){ e.preventDefault(); send(); }}} />
+        <button onClick={send}>Отправить</button>
+      </div>
+
+      {ctxMenu ? (
+        <div className="context-menu" style={{ left: ctxMenu.x, top: ctxMenu.y }}>
+          <button onClick={() => assignTask(ctxMenu.msg)}>Создать задачу из сообщения</button>
+          <button onClick={() => { navigator.clipboard?.writeText(ctxMenu.msg.text); closeCtx(); alert("Скопировано"); }}>Копировать</button>
+          <button onClick={() => deleteMsg(ctxMenu.msg)}>Удалить</button>
+          <button onClick={closeCtx}>Закрыть</button>
+        </div>
+      ) : null}
     </div>
   );
 }
