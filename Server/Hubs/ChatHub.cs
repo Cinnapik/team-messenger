@@ -1,5 +1,8 @@
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Logging;
+using Server.Data;
+using Server.Models;
+using System;
 using System.Threading.Tasks;
 
 namespace Server.Hubs
@@ -7,9 +10,12 @@ namespace Server.Hubs
     public class ChatHub : Hub
     {
         private readonly ILogger<ChatHub> _logger;
-        public ChatHub(ILogger<ChatHub> logger)
+        private readonly AppDbContext _db;
+
+        public ChatHub(ILogger<ChatHub> logger, AppDbContext db)
         {
             _logger = logger;
+            _db = db;
         }
 
         public override async Task OnConnectedAsync()
@@ -18,7 +24,7 @@ namespace Server.Hubs
             await base.OnConnectedAsync();
         }
 
-        public override async Task OnDisconnectedAsync(System.Exception? exception)
+        public override async Task OnDisconnectedAsync(Exception? exception)
         {
             _logger.LogInformation("Client disconnected: {ConnectionId}, error: {Error}", Context.ConnectionId, exception?.Message);
             await base.OnDisconnectedAsync(exception);
@@ -27,7 +33,18 @@ namespace Server.Hubs
         public async Task SendMessage(string user, string message)
         {
             _logger.LogInformation("SendMessage from {User}: {Message}", user, message);
-            await Clients.All.SendAsync("ReceiveMessage", user, message);
+
+            var msg = new Message
+            {
+                User = user,
+                Text = message,
+                CreatedAt = DateTime.UtcNow
+            };
+
+            _db.Messages.Add(msg);
+            await _db.SaveChangesAsync();
+
+            await Clients.All.SendAsync("ReceiveMessage", msg.User, msg.Text, msg.CreatedAt);
         }
     }
 }
